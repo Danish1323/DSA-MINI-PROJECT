@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Next.js build
+.next/
+out/
+
+# Compiled C++ binaries
+cpp_engine/dijkstra_router
+cpp_engine/urgent_queue
+cpp_engine/greedy_assigner
+cpp_engine/graph_analyzer
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# Debug
+npm-debug.log*
