@@ -1,5 +1,11 @@
 # 🚛 Courier Logistics DSA Visualizer
 
+> [!IMPORTANT]
+> **Presentation & Learning Resources:**
+> * **New to DSA?** Read the [Beginner's DSA Explanation Guide (README_DSA.md)](./README_DSA.md) for a plain-English explanation of the code, structures, and math.
+> * **Presenting this project?** Read the [Interactive Presentation & UI Guide (WEBSITE_GUIDE.md)](./WEBSITE_GUIDE.md) for a complete step-by-step walkthrough, visual breakdown, and a full presentation script!
+> * **Preparing for your DSA viva?** Read the [Complete DSA Viva Preparation Guide (DSA_VIVA_GUIDE.md)](./DSA_VIVA_GUIDE.md) — covers your ENTIRE 6-module syllabus with analogies, code, and Q&A!
+
 An interactive **Data Structures & Algorithms** visualizer built for a courier logistics network. The system uses **native C++ engines** for algorithmic computation and a **React/Next.js dashboard** for step-by-step animated visualization.
 
 Each algorithm is implemented in pure C++ and outputs structured JSON events. The web frontend consumes these events and renders interactive, educational animations — making it easy to understand how Dijkstra's shortest path, min-heap priority queues, and greedy assignment actually work.
