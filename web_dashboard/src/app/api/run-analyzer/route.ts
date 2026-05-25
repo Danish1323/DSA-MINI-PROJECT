@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       input += `${edge.u} ${edge.v}\n`;
     }
 
-    const executablePath = path.resolve('../cpp_engine/graph_analyzer');
+    const executablePath = path.resolve(process.cwd(), '../cpp_engine/graph_analyzer');
 
     return new Promise((resolve) => {
       const child = exec(executablePath, (error, stdout, stderr) => {

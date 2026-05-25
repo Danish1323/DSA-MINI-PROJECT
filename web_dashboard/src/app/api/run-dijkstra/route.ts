@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     input += `${start} ${end}\n`;
 
     // Path to the executable (assuming we are running from web_dashboard in dev mode)
-    const executablePath = path.resolve('../cpp_engine/dijkstra_router');
+    const executablePath = path.resolve(process.cwd(), '../cpp_engine/dijkstra_router');
 
     return new Promise((resolve) => {
       const child = exec(executablePath, (error, stdout, stderr) => {

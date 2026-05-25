@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       input += `${pkg.id} ${pkg.cost} ${pkg.time}\n`;
     }
 
-    const executablePath = path.resolve('../cpp_engine/greedy_assigner');
+    const executablePath = path.resolve(process.cwd(), '../cpp_engine/greedy_assigner');
 
     return new Promise((resolve) => {
       const child = exec(executablePath, (error, stdout, stderr) => {

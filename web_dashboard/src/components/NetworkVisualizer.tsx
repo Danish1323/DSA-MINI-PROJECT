@@ -1,325 +1,594 @@
 "use client";
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Play, Pause, SkipForward, SkipBack, RotateCcw, Route, ChevronRight } from 'lucide-react';
+import { LOCATIONS, ROAD_EDGES, RouteResult } from '@/app/page';
 
-const NODES = [
-  { id: 0, label: 'Warehouse',  x: 100, y: 220 },
-  { id: 1, label: 'Hub Alpha',  x: 320, y: 70  },
-  { id: 2, label: 'Hub Beta',   x: 320, y: 370 },
-  { id: 3, label: 'Relay',      x: 540, y: 150 },
-  { id: 4, label: 'Depot',      x: 540, y: 310 },
-  { id: 5, label: 'Delivery',   x: 760, y: 220 },
+interface Props {
+  routeResults: RouteResult[];
+  optimized: boolean;
+}
+
+// ── Node layout — 12 nodes in a dense, layered topology ──────
+const NODE_POS: Record<number, { x: number; y: number }> = {
+  0:  { x: 90,  y: 280 },  // Central Warehouse  — far left middle
+  1:  { x: 220, y: 100 },  // North Hub          — upper left
+  2:  { x: 220, y: 440 },  // South Hub          — lower left
+  3:  { x: 390, y: 80  },  // East Depot         — upper mid-left
+  4:  { x: 390, y: 460 },  // West Depot         — lower mid-left
+  5:  { x: 600, y: 60  },  // Airport Terminal   — top right
+  6:  { x: 480, y: 270 },  // City Centre        — centre
+  7:  { x: 660, y: 420 },  // Port Facility      — lower right
+  8:  { x: 560, y: 160 },  // Industrial Zone    — upper centre-right
+  9:  { x: 340, y: 310 },  // Riverside Depot    — centre-left
+  10: { x: 700, y: 240 },  // Tech Park          — right
+  11: { x: 790, y: 340 },  // Border Checkpoint  — far right
+};
+
+const ROUTE_COLORS = [
+  '#3b82f6', '#22c55e', '#f59e0b', '#a78bfa',
+  '#22d3ee', '#f97316', '#ec4899', '#84cc16',
 ];
 
-const EDGES = [
-  { u: 0, v: 1, w: 7 }, { u: 0, v: 2, w: 3 },
-  { u: 1, v: 3, w: 2 }, { u: 2, v: 1, w: 1 },
-  { u: 2, v: 4, w: 6 }, { u: 3, v: 5, w: 4 },
-  { u: 4, v: 5, w: 2 }, { u: 3, v: 4, w: 1 },
-];
+// ── Helpers ──────────────────────────────────────────────────
+function edgeKey(a: number, b: number) {
+  return `${Math.min(a, b)}-${Math.max(a, b)}`;
+}
 
-interface Step { event: string; [key: string]: any; }
+function midpoint(a: { x: number; y: number }, b: { x: number; y: number }) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
 
-function explain(step: Step | null, idx: number): { title: string; detail: string } {
-  if (!step) return {
-    title: 'Ready to run Dijkstra\'s shortest path algorithm',
-    detail: 'This algorithm finds the cheapest route from the Warehouse (node 0) to the Delivery point (node 5). It works by always expanding the nearest unvisited node first — this is called a "greedy" strategy. Click "Run" to begin.'
+function shrink(
+  u: { x: number; y: number },
+  v: { x: number; y: number },
+  r: number
+) {
+  const dx = v.x - u.x, dy = v.y - u.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  const nx = dx / len, ny = dy / len;
+  return {
+    x1: u.x + nx * r, y1: u.y + ny * r,
+    x2: v.x - nx * r, y2: v.y - ny * r,
   };
+}
+
+// ── Status text from Dijkstra step ───────────────────────────
+function stepStatus(step: any, pkgId: string): string {
+  if (!step) return '';
   switch (step.event) {
-    case 'init': return {
-      title: 'Graph loaded — ready to find shortest path',
-      detail: `The graph has ${step.nodes} nodes (locations) connected by weighted edges (travel costs). We want the cheapest path from node ${step.start} to node ${step.end}. Initially, every node\'s distance is set to ∞ (infinity) except the start node, which is 0.`
-    };
-    case 'queue_push': return {
-      title: `Start node ${step.node} added to the priority queue`,
-      detail: 'The priority queue holds nodes we still need to visit, ordered by their current shortest distance. We begin with just the start node at distance 0. The algorithm will keep picking the closest node from this queue.'
-    };
-    case 'visit': return {
-      title: `Now visiting node ${step.node} (distance = ${step.distance})`,
-      detail: `Node ${step.node} has the smallest distance in the queue (${step.distance}), so we visit it next. We\'ll check all its neighbors — if we can reach any neighbor via node ${step.node} with a shorter total distance, we update that neighbor\'s distance. This is called "relaxation".`
-    };
-    case 'relax': return {
-      title: `Relaxing edge: ${step.u} → ${step.v} (weight ${step.weight})`,
-      detail: `Can we reach node ${step.v} faster by going through node ${step.u}? Current distance to ${step.u} is ${step.new_dist - step.weight}, plus edge weight ${step.weight} = ${step.new_dist}. ${step.old_dist === '"INF"' ? `Node ${step.v} was unreachable before (∞), so ${step.new_dist} is definitely better.` : `The old distance was ${step.old_dist}, and ${step.new_dist} < ${step.old_dist}, so we update it.`} Node ${step.v}\'s distance is now ${step.new_dist}.`
-    };
-    case 'target_reached': return {
-      title: '🎯 Target reached!',
-      detail: `Node ${step.node} (the delivery point) was just popped from the priority queue. Because Dijkstra\'s always picks the node with the smallest distance, we can guarantee this is the shortest possible path. No other route can be cheaper.`
-    };
-    case 'finish': return {
-      title: `Shortest path found: total distance = ${step.total_distance}`,
-      detail: `The optimal route is: ${step.path.map((n: number) => `${n} (${NODES[n]?.label})`).join(' → ')}. Total cost: ${step.total_distance}. The green highlighted path shows this route on the graph.`
-    };
-    default: return { title: '', detail: '' };
+    case 'init':
+      return `[${pkgId}] Network loaded — starting route search`;
+    case 'queue_push':
+      return `[${pkgId}] Starting from ${LOCATIONS[step.node]?.name ?? step.node}`;
+    case 'visit':
+      return `[${pkgId}] Evaluating ${LOCATIONS[step.node]?.name ?? step.node} (${step.distance} km from origin)`;
+    case 'relax':
+      return `[${pkgId}] Shorter path found: ${LOCATIONS[step.u]?.short} → ${LOCATIONS[step.v]?.short} = ${step.new_dist} km`;
+    case 'target_reached':
+      return `[${pkgId}] Destination reached — confirming optimal path…`;
+    case 'finish':
+      return `[${pkgId}] ✓ Optimal route confirmed — ${step.total_distance} km`;
+    default:
+      return '';
   }
 }
 
-export default function NetworkVisualizer() {
-  const [steps, setSteps] = useState<Step[]>([]);
-  const [stepIdx, setStepIdx] = useState(-1);
-  const [loading, setLoading] = useState(false);
-  const [playing, setPlaying] = useState(false);
-  const playRef = useRef(false);
-  const logRef = useRef<HTMLDivElement>(null);
+export default function RouteMap({ routeResults, optimized }: Props) {
+  // Sort results by priority (most urgent first = lowest number)
+  const sortedResults = [...routeResults].sort(
+    (a, b) => a.pkg.priority - b.pkg.priority
+  );
 
-  const run = async () => {
-    setLoading(true); setSteps([]); setStepIdx(-1); setPlaying(false); playRef.current = false;
-    try {
-      const res = await fetch('/api/run-dijkstra', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodes: NODES.length, edges: EDGES, start: 0, end: 5 }),
-      });
-      const data = await res.json();
-      if (!data.error) { setSteps(data); setStepIdx(0); }
-      else alert("C++ error: " + data.error);
-    } catch (e) { console.error(e); }
-    setLoading(false);
+  // Animation state
+  const [activeRouteIdx, setActiveRouteIdx] = useState(0); // which route we're animating
+  const [stepIdx, setStepIdx]               = useState(0);
+  const [playing, setPlaying]               = useState(false);
+  const [done, setDone]                     = useState(false);
+  const [hoveredRoute, setHoveredRoute]     = useState<number | null>(null);
+  const playRef = useRef(false);
+
+  // Completed routes (fully animated)
+  const [completedRoutes, setCompletedRoutes] = useState<number[]>([]);
+
+  // Reset when new results arrive
+  useEffect(() => {
+    setActiveRouteIdx(0);
+    setStepIdx(0);
+    setPlaying(false);
+    setDone(false);
+    setCompletedRoutes([]);
+    playRef.current = false;
+  }, [routeResults]);
+
+  const currentRoute = sortedResults[activeRouteIdx] ?? null;
+  const steps        = currentRoute?.steps ?? [];
+  const currentStep  = steps[stepIdx] ?? null;
+
+  const goNext = useCallback(() => {
+    if (!currentRoute) return;
+    if (stepIdx < steps.length - 1) {
+      setStepIdx(s => s + 1);
+    } else {
+      // finished this route
+      setCompletedRoutes(prev => [...prev, activeRouteIdx]);
+      if (activeRouteIdx < sortedResults.length - 1) {
+        setActiveRouteIdx(r => r + 1);
+        setStepIdx(0);
+      } else {
+        setPlaying(false);
+        playRef.current = false;
+        setDone(true);
+      }
+    }
+  }, [currentRoute, stepIdx, steps.length, activeRouteIdx, sortedResults.length]);
+
+  const goPrev = () => {
+    if (stepIdx > 0) setStepIdx(s => s - 1);
   };
 
-  const next = useCallback(() => setStepIdx(p => Math.min(p + 1, steps.length - 1)), [steps.length]);
-  const prev = () => setStepIdx(p => Math.max(p - 1, 0));
-  const reset = () => { setSteps([]); setStepIdx(-1); setPlaying(false); playRef.current = false; };
-  const togglePlay = useCallback(() => setPlaying(prev => { playRef.current = !prev; return !prev; }), []);
+  const togglePlay = () => {
+    const next = !playing;
+    setPlaying(next);
+    playRef.current = next;
+  };
+
+  const reset = () => {
+    setActiveRouteIdx(0);
+    setStepIdx(0);
+    setPlaying(false);
+    setDone(false);
+    setCompletedRoutes([]);
+    playRef.current = false;
+  };
 
   useEffect(() => {
     if (!playing) return;
     const iv = setInterval(() => {
       if (!playRef.current) { clearInterval(iv); return; }
-      setStepIdx(p => {
-        if (p >= steps.length - 1) { playRef.current = false; setPlaying(false); clearInterval(iv); return p; }
-        return p + 1;
-      });
-    }, 1200);
+      goNext();
+    }, 600);
     return () => clearInterval(iv);
-  }, [playing, steps.length]);
+  }, [playing, goNext]);
 
-  useEffect(() => { logRef.current && (logRef.current.scrollTop = logRef.current.scrollHeight); }, [stepIdx]);
-
-  // Build visualization state
-  const visited = new Set<number>();
+  // ── Build visual state from steps[0..stepIdx] of current route ──
+  const visited      = new Set<number>();
   const relaxedEdges = new Set<string>();
-  const finalPath = new Set<string>();
-  const finalPathNodes = new Set<number>();
-  const distMap = new Map<number, number | string>();
-  let activeNode = -1;
-  let relaxingEdge: string | null = null;
-  let finished = false;
-
-  // Initialize all distances to ∞
-  NODES.forEach(n => distMap.set(n.id, '∞'));
+  const finalPath    = new Set<string>();
+  const finalNodes   = new Set<number>();
+  const distMap      = new Map<number, number>();
+  let   activeNode   = -1;
+  let   relaxingEdge: string | null = null;
+  let   routeFinished = false;
 
   for (let i = 0; i <= stepIdx; i++) {
     const s = steps[i];
     if (!s) continue;
-    if (s.event === 'visit') { visited.add(s.node); activeNode = s.node; }
-    if (s.event === 'relax') {
-      relaxedEdges.add(`${s.u}-${s.v}`); relaxedEdges.add(`${s.v}-${s.u}`);
+    if (s.event === 'visit')        { visited.add(s.node); activeNode = s.node; }
+    if (s.event === 'relax')        {
+      relaxedEdges.add(edgeKey(s.u, s.v));
       distMap.set(s.v, s.new_dist);
-      if (i === stepIdx) relaxingEdge = `${s.u}-${s.v}`;
+      if (i === stepIdx) relaxingEdge = edgeKey(s.u, s.v);
     }
-    if (s.event === 'queue_push') distMap.set(s.node, s.distance);
+    if (s.event === 'queue_push')   distMap.set(s.node, s.distance);
     if (s.event === 'finish') {
-      finished = true;
+      routeFinished = true;
       const p: number[] = s.path;
-      p.forEach(n => finalPathNodes.add(n));
-      for (let j = 0; j < p.length - 1; j++) { finalPath.add(`${p[j]}-${p[j+1]}`); finalPath.add(`${p[j+1]}-${p[j]}`); }
+      p.forEach(n => finalNodes.add(n));
+      for (let j = 0; j < p.length - 1; j++) {
+        finalPath.add(edgeKey(p[j], p[j + 1]));
+      }
     }
   }
 
-  const currentStep = steps[stepIdx] || null;
-  const { title, detail } = explain(currentStep, stepIdx);
+  // Completed routes — show their final paths permanently
+  const completedPaths = new Map<string, number>(); // edgeKey -> routeIdx
+  const completedNodes = new Map<number, number>();  // nodeId  -> routeIdx
+  completedRoutes.forEach(ri => {
+    const r = sortedResults[ri];
+    if (!r) return;
+    const finish = r.steps.find((s: any) => s.event === 'finish');
+    if (!finish) return;
+    const p: number[] = finish.path;
+    p.forEach(n => completedNodes.set(n, ri));
+    for (let j = 0; j < p.length - 1; j++) {
+      completedPaths.set(edgeKey(p[j], p[j + 1]), ri);
+    }
+  });
+
+  const statusMsg = stepStatus(currentStep, currentRoute?.pkg.id ?? '');
+  const activeColor = currentRoute ? ROUTE_COLORS[activeRouteIdx % ROUTE_COLORS.length] : '#3b82f6';
 
   return (
-    <div className="viz-card">
-      <div className="viz-titlebar">
-        <div className="viz-titlebar-left">
-          <div className="viz-icon viz-icon-indigo"><Route size={18} /></div>
+    <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+      {/* ── Header ── */}
+      <div className="card-header">
+        <div className="card-header-left">
+          <div className="card-icon ci-blue">🗺️</div>
           <div>
-            <h2 className="viz-name">Dijkstra&apos;s Shortest Path Algorithm</h2>
-            <p className="viz-desc">Finds the minimum-cost route through a weighted graph</p>
+            <div className="card-title">Route Optimisation — Live Pathfinding</div>
+            <div className="card-subtitle">
+              {optimized
+                ? done
+                  ? `All ${sortedResults.length} routes optimised — hover legend to inspect`
+                  : `Processing ${currentRoute?.pkg.id} (${activeRouteIdx + 1}/${sortedResults.length}) — priority order`
+                : `${LOCATIONS.length} locations · ${ROAD_EDGES.length} road segments`}
+            </div>
           </div>
         </div>
-        <div className="viz-controls">
-          <button onClick={run} disabled={loading} className="viz-btn viz-btn-indigo" id="dijkstra-run">
-            {loading ? 'Running…' : 'Run Algorithm'}
-          </button>
-          <div className="viz-btn-group">
-            <button onClick={prev} disabled={stepIdx <= 0} className="viz-btn-icon"><SkipBack size={14} /></button>
-            <button onClick={togglePlay} disabled={!steps.length || stepIdx >= steps.length - 1} className="viz-btn-icon">
-              {playing ? <Pause size={14} /> : <Play size={14} />}
-            </button>
-            <button onClick={next} disabled={stepIdx >= steps.length - 1} className="viz-btn-icon"><SkipForward size={14} /></button>
-            <button onClick={reset} disabled={!steps.length} className="viz-btn-icon"><RotateCcw size={14} /></button>
+
+        {optimized && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            {/* Playback controls */}
+            <div className="icon-btn-group">
+              <button className="icon-btn" onClick={goPrev} disabled={stepIdx === 0 && activeRouteIdx === 0}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+              </button>
+              <button className="icon-btn" onClick={togglePlay} disabled={done && !playing}>
+                {playing
+                  ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                  : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                }
+              </button>
+              <button className="icon-btn" onClick={goNext} disabled={done}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+              </button>
+              <button className="icon-btn" onClick={reset}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
+              </button>
+            </div>
+            {!done && (
+              <span className="badge b-blue">
+                Step {stepIdx + 1}/{steps.length}
+              </span>
+            )}
+            {done && <span className="badge b-green">✓ All routes complete</span>}
           </div>
-          {steps.length > 0 && <div className="viz-step-badge">Step {stepIdx + 1} of {steps.length}</div>}
-        </div>
+        )}
       </div>
 
-      {/* Explanation Panel */}
-      <div className="viz-explanation">
-        <div className="viz-explanation-header">
-          <span className="viz-explanation-tag">What&apos;s happening</span>
-          {steps.length > 0 && <span className="viz-explanation-step">Step {stepIdx + 1}/{steps.length}</span>}
+      {/* ── Status bar ── */}
+      {optimized && (
+        <div style={{
+          padding: '8px 18px',
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--bg-surface)',
+          display: 'flex', alignItems: 'center', gap: '10px', minHeight: 36,
+        }}>
+          {statusMsg ? (
+            <>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: activeColor, flexShrink: 0,
+                boxShadow: `0 0 6px ${activeColor}`,
+                animation: playing ? 'blink 0.8s ease-in-out infinite' : 'none',
+              }} />
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>
+                {statusMsg}
+              </span>
+            </>
+          ) : (
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-3)' }}>
+              Click ▶ to start animated route optimisation
+            </span>
+          )}
         </div>
-        <div className="viz-explanation-main">{title}</div>
-        <div className="viz-explanation-detail">{detail}</div>
-      </div>
+      )}
 
-      <div className="viz-content">
-        <div className="viz-canvas">
-          <svg width="100%" height="100%" viewBox="0 0 860 460" preserveAspectRatio="xMidYMid meet">
-            {/* Grid */}
-            {Array.from({ length: 22 }).map((_, i) => (
-              <line key={`gx-${i}`} x1={i*40} y1={0} x2={i*40} y2={460} stroke="#f1f5f9" strokeWidth="1" />
-            ))}
-            {Array.from({ length: 12 }).map((_, i) => (
-              <line key={`gy-${i}`} x1={0} y1={i*40} x2={860} y2={i*40} stroke="#f1f5f9" strokeWidth="1" />
-            ))}
+      {/* ── SVG Map ── */}
+      <div className="map-wrap" style={{ flex: 1, position: 'relative' }}>
+        <svg
+          width="100%" height="100%"
+          viewBox="0 0 880 540"
+          preserveAspectRatio="xMidYMid meet"
+          style={{ minHeight: 460, display: 'block' }}
+        >
+          {/* Dot grid */}
+          {Array.from({ length: 45 }).map((_, col) =>
+            Array.from({ length: 28 }).map((_, row) => (
+              <circle
+                key={`d${col}-${row}`}
+                cx={col * 20} cy={row * 20}
+                r={0.8} fill="#1a2235"
+              />
+            ))
+          )}
 
-            {/* Edges */}
-            {EDGES.map((e, idx) => {
-              const u = NODES[e.u], v = NODES[e.v];
-              const eid = `${e.u}-${e.v}`;
-              const isFinal = finalPath.has(eid);
-              const isRelaxing = relaxingEdge === eid;
-              const isRelaxed = relaxedEdges.has(eid);
+          {/* ── All base edges (dim) ── */}
+          {ROAD_EDGES.map((e, idx) => {
+            const u = NODE_POS[e.u], v = NODE_POS[e.v];
+            const { x1, y1, x2, y2 } = shrink(u, v, 20);
+            const key = edgeKey(e.u, e.v);
 
-              let color = '#e2e8f0', width = 2, opacity = 1;
-              if (isFinal) { color = '#16a34a'; width = 4; }
-              else if (isRelaxing) { color = '#d97706'; width = 3.5; }
-              else if (isRelaxed) { color = '#818cf8'; width = 2.5; }
+            // Completed route edge?
+            const completedRouteIdx = completedPaths.get(key);
+            const isCompleted = completedRouteIdx !== undefined;
 
-              const dx = v.x - u.x, dy = v.y - u.y;
-              const len = Math.sqrt(dx*dx + dy*dy);
-              const nx = dx/len, ny = dy/len, r = 28;
+            // Current route edge states
+            const isFinalPath  = finalPath.has(key);
+            const isRelaxing   = relaxingEdge === key;
+            const isRelaxed    = relaxedEdges.has(key);
 
-              return (
-                <g key={`e-${idx}`}>
-                  <motion.line
-                    x1={u.x + nx*r} y1={u.y + ny*r} x2={v.x - nx*r} y2={v.y - ny*r}
-                    stroke={color} strokeWidth={width} opacity={opacity}
-                    strokeLinecap="round"
-                    animate={{ stroke: color, strokeWidth: width }}
-                    transition={{ duration: 0.3 }}
-                  />
-                  <g transform={`translate(${(u.x+v.x)/2},${(u.y+v.y)/2})`}>
-                    <rect x={-14} y={-12} width={28} height={22} rx={6} fill="white" stroke="#e2e8f0" strokeWidth={1} />
-                    <text y={4} fill={isFinal ? '#16a34a' : isRelaxing ? '#d97706' : '#64748b'}
-                      fontSize="12" fontWeight="700" textAnchor="middle" fontFamily="var(--font-mono)">{e.w}</text>
+            // Hover filter
+            const isHoveredCompleted = hoveredRoute !== null && completedRouteIdx === hoveredRoute;
+            const isHoveredActive    = hoveredRoute === activeRouteIdx && (isFinalPath || isRelaxed);
+
+            let stroke = '#1a2a3f';
+            let sw     = 1.2;
+            let opacity = 0.4;
+
+            if (isFinalPath) {
+              stroke  = activeColor;
+              sw      = 4;
+              opacity = 1;
+            } else if (isRelaxing) {
+              stroke  = '#f59e0b';
+              sw      = 2.5;
+              opacity = 1;
+            } else if (isRelaxed) {
+              stroke  = `${activeColor}88`;
+              sw      = 2;
+              opacity = 0.7;
+            } else if (isCompleted) {
+              stroke  = ROUTE_COLORS[(completedRouteIdx ?? 0) % ROUTE_COLORS.length];
+              sw      = 3;
+              opacity = hoveredRoute === null ? 0.6 : isHoveredCompleted ? 1 : 0.15;
+            }
+
+            const mid = midpoint(u, v);
+
+            return (
+              <g key={`e${idx}`}>
+                <motion.line
+                  x1={x1} y1={y1} x2={x2} y2={y2}
+                  stroke={stroke} strokeWidth={sw}
+                  strokeLinecap="round"
+                  opacity={opacity}
+                  animate={{ stroke, strokeWidth: sw, opacity }}
+                  transition={{ duration: 0.25 }}
+                />
+                {/* km label — only show on active/completed edges */}
+                {(isRelaxed || isFinalPath || isCompleted) && (
+                  <g transform={`translate(${mid.x},${mid.y})`}>
+                    <rect x={-13} y={-9} width={26} height={17} rx={4}
+                      fill="#0b0f1a"
+                      stroke={isFinalPath ? activeColor : isCompleted ? ROUTE_COLORS[(completedRouteIdx ?? 0) % ROUTE_COLORS.length] : '#2a3a55'}
+                      strokeWidth={1}
+                      opacity={opacity}
+                    />
+                    <text y={4}
+                      fill={isFinalPath ? activeColor : isCompleted ? ROUTE_COLORS[(completedRouteIdx ?? 0) % ROUTE_COLORS.length] : '#4a6080'}
+                      fontSize="9" fontWeight="700" textAnchor="middle"
+                      fontFamily="var(--font-mono)"
+                      opacity={opacity}
+                    >{e.w}km</text>
                   </g>
-                </g>
-              );
-            })}
+                )}
+                {/* Dim km label for unvisited edges */}
+                {!isRelaxed && !isFinalPath && !isCompleted && (
+                  <g transform={`translate(${mid.x},${mid.y})`}>
+                    <text y={4} fill="#1e2d45"
+                      fontSize="9" fontWeight="600" textAnchor="middle"
+                      fontFamily="var(--font-mono)">{e.w}</text>
+                  </g>
+                )}
+              </g>
+            );
+          })}
 
-            {/* Nodes */}
-            {NODES.map(node => {
-              const isActive = activeNode === node.id;
-              const isVisited = visited.has(node.id);
-              const isOnPath = finalPathNodes.has(node.id);
-              const isStart = node.id === 0;
-              const isTarget = node.id === 5;
-              const d = distMap.get(node.id);
+          {/* ── Moving dot along relaxing edge ── */}
+          {relaxingEdge && (() => {
+            const [a, b] = relaxingEdge.split('-').map(Number);
+            const u = NODE_POS[a], v = NODE_POS[b];
+            if (!u || !v) return null;
+            return (
+              <motion.circle
+                key={`dot-${relaxingEdge}-${stepIdx}`}
+                r={5} fill={activeColor}
+                style={{ filter: `drop-shadow(0 0 6px ${activeColor})` }}
+                initial={{ cx: u.x, cy: u.y, opacity: 1 }}
+                animate={{ cx: v.x, cy: v.y, opacity: 0 }}
+                transition={{ duration: 0.55, ease: 'easeInOut' }}
+              />
+            );
+          })()}
 
-              let fill = 'white', stroke = '#e2e8f0', textColor = '#64748b', sw = 2;
+          {/* ── Nodes ── */}
+          {LOCATIONS.map(loc => {
+            const pos = NODE_POS[loc.id];
+            if (!pos) return null;
 
-              if (finished && isOnPath) { fill = '#dcfce7'; stroke = '#16a34a'; textColor = '#166534'; sw = 3; }
-              else if (isActive) { fill = '#eef2ff'; stroke = '#4f46e5'; textColor = '#3730a3'; sw = 3; }
-              else if (isVisited) { fill = '#f1f5f9'; stroke = '#94a3b8'; textColor = '#475569'; }
-              else if (isStart) { fill = '#f0fdf4'; stroke = '#16a34a'; textColor = '#166534'; }
-              else if (isTarget) { fill = '#fef2f2'; stroke = '#dc2626'; textColor = '#991b1b'; }
+            const isActive   = activeNode === loc.id;
+            const inFinal    = finalNodes.has(loc.id);
+            const inVisited  = visited.has(loc.id);
+            const isOrigin   = currentRoute?.pkg.origin === loc.id;
+            const isDest     = currentRoute?.pkg.destination === loc.id;
+            const dist       = distMap.get(loc.id);
 
-              return (
-                <g key={`n-${node.id}`}>
-                  {isActive && (
-                    <motion.circle cx={node.x} cy={node.y} r={36} fill="none" stroke="#4f46e5" strokeWidth={2}
-                      initial={{ opacity: 0.5, r: 30 }} animate={{ opacity: 0, r: 48 }}
-                      transition={{ duration: 1.5, repeat: Infinity }} />
-                  )}
-                  <motion.circle cx={node.x} cy={node.y} r={26} fill={fill} stroke={stroke} strokeWidth={sw}
-                    animate={{ r: isActive ? 28 : 26 }} transition={{ duration: 0.3 }} />
-                  <text x={node.x} y={node.y + 5} fill={textColor}
-                    fontSize="15" fontWeight="800" textAnchor="middle" fontFamily="var(--font-sans)">{node.id}</text>
-                  <text x={node.x} y={node.y + 48} fill="#94a3b8"
-                    fontSize="11" fontWeight="500" textAnchor="middle" fontFamily="var(--font-sans)">{node.label}</text>
-                  {isStart && !finished && (
-                    <text x={node.x} y={node.y - 38} fill="#16a34a" fontSize="10" fontWeight="700" textAnchor="middle">SOURCE</text>
-                  )}
-                  {isTarget && !finished && (
-                    <text x={node.x} y={node.y - 38} fill="#dc2626" fontSize="10" fontWeight="700" textAnchor="middle">TARGET</text>
-                  )}
-                  {/* Distance badge */}
-                  {d !== undefined && d !== '∞' && (
-                    <g>
-                      <rect x={node.x + 18} y={node.y - 38} width={30} height={20} rx={5}
-                        fill={finished && isOnPath ? '#dcfce7' : '#eef2ff'}
-                        stroke={finished && isOnPath ? '#16a34a' : '#818cf8'} strokeWidth={1} />
-                      <text x={node.x + 33} y={node.y - 24} fill={finished && isOnPath ? '#166534' : '#4338ca'}
-                        fontSize="11" fontWeight="700" textAnchor="middle" fontFamily="var(--font-mono)">{d}</text>
-                    </g>
-                  )}
-                </g>
-              );
-            })}
-          </svg>
-        </div>
+            // Completed route node
+            const completedRouteIdx = completedNodes.get(loc.id);
+            const isCompleted = completedRouteIdx !== undefined;
+            const isHoveredCompleted = hoveredRoute !== null && completedRouteIdx === hoveredRoute;
 
-        <div className="viz-sidebar">
-          {/* Distance Table */}
-          <div className="viz-table">
-            <h4 className="viz-table-title">Distance Table</h4>
-            <div className="viz-table-grid">
-              {NODES.map(node => {
-                const d = distMap.get(node.id);
-                const isActive = activeNode === node.id;
-                const isOnPath = finalPathNodes.has(node.id);
-                return (
-                  <div key={node.id} className={`viz-table-row ${isActive ? 'viz-table-row-active' : ''} ${finished && isOnPath ? 'viz-table-row-path' : ''}`}>
-                    <span className="viz-table-node">{node.id}</span>
-                    <span className={d === '∞' ? 'viz-table-dist-inf' : isActive ? 'viz-table-dist-updated' : 'viz-table-dist'}>
-                      {d === '∞' ? '∞' : d}
-                    </span>
-                  </div>
-                );
-              })}
+            let fill   = '#0f1520';
+            let stroke = '#1a2a3f';
+            let sw     = 1.5;
+            let textC  = '#2a3a55';
+            let r      = 20;
+
+            if (routeFinished && inFinal) {
+              fill = '#0a2010'; stroke = activeColor; sw = 2.5; textC = activeColor; r = 22;
+            } else if (isActive) {
+              fill = '#0f1e35'; stroke = activeColor; sw = 2.5; textC = '#e8edf8'; r = 22;
+            } else if (isOrigin) {
+              fill = '#0a2010'; stroke = '#22c55e'; sw = 2; textC = '#22c55e';
+            } else if (isDest) {
+              fill = '#1a0a20'; stroke = '#a78bfa'; sw = 2; textC = '#a78bfa';
+            } else if (inVisited) {
+              fill = '#0d1525'; stroke = '#2a3a55'; sw = 1.5; textC = '#3a5070';
+            } else if (isCompleted) {
+              const cc = ROUTE_COLORS[(completedRouteIdx ?? 0) % ROUTE_COLORS.length];
+              fill = '#0d1525'; stroke = cc; sw = 2;
+              textC = hoveredRoute === null ? cc : isHoveredCompleted ? cc : '#2a3a55';
+              opacity: hoveredRoute === null ? 1 : isHoveredCompleted ? 1 : 0.3;
+            }
+
+            return (
+              <g key={`n${loc.id}`}>
+                {/* Pulse ring for active node */}
+                {isActive && (
+                  <motion.circle cx={pos.x} cy={pos.y} r={28} fill="none"
+                    stroke={activeColor} strokeWidth={1.5}
+                    initial={{ opacity: 0.8, r: 22 }}
+                    animate={{ opacity: 0, r: 38 }}
+                    transition={{ duration: 1.2, repeat: Infinity }}
+                  />
+                )}
+                {/* Origin/dest glow */}
+                {(isOrigin || isDest) && (
+                  <circle cx={pos.x} cy={pos.y} r={28} fill="none"
+                    stroke={isOrigin ? '#22c55e' : '#a78bfa'}
+                    strokeWidth={1} strokeDasharray="3 3" opacity={0.4}
+                  />
+                )}
+
+                <motion.circle
+                  cx={pos.x} cy={pos.y} r={r}
+                  fill={fill} stroke={stroke} strokeWidth={sw}
+                  animate={{ r, fill, stroke }}
+                  transition={{ duration: 0.2 }}
+                />
+
+                {/* Short label */}
+                <text x={pos.x} y={pos.y + 4}
+                  fill={textC} fontSize="10" fontWeight="800"
+                  textAnchor="middle" fontFamily="var(--font-mono)">{loc.short}</text>
+
+                {/* Full name below */}
+                <text x={pos.x} y={pos.y + 36}
+                  fill="#2a3a55" fontSize="9" fontWeight="500"
+                  textAnchor="middle" fontFamily="var(--font-sans)">{loc.name}</text>
+
+                {/* ORIGIN / DEST labels */}
+                {isOrigin && (
+                  <text x={pos.x} y={pos.y - 30} fill="#22c55e"
+                    fontSize="8" fontWeight="700" textAnchor="middle">ORIGIN</text>
+                )}
+                {isDest && (
+                  <text x={pos.x} y={pos.y - 30} fill="#a78bfa"
+                    fontSize="8" fontWeight="700" textAnchor="middle">DEST</text>
+                )}
+
+                {/* Distance badge */}
+                {dist !== undefined && !routeFinished && (
+                  <g>
+                    <rect x={pos.x + 16} y={pos.y - 32} width={28} height={16} rx={4}
+                      fill="#0b0f1a" stroke={activeColor} strokeWidth={1} />
+                    <text x={pos.x + 30} y={pos.y - 21}
+                      fill={activeColor} fontSize="9" fontWeight="700"
+                      textAnchor="middle" fontFamily="var(--font-mono)">{dist}</text>
+                  </g>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+
+        {/* Idle overlay */}
+        {!optimized && (
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(11,15,26,0.7)', pointerEvents: 'none',
+          }}>
+            <div style={{ textAlign: 'center', color: 'var(--text-3)' }}>
+              <div style={{ fontSize: '2.5rem', marginBottom: 10 }}>🗺️</div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--text-2)', fontWeight: 600 }}>Add shipments and click</div>
+              <div style={{ fontSize: '0.85rem', color: 'var(--green)', fontWeight: 800 }}>Optimize & Dispatch</div>
+              <div style={{ fontSize: '0.72rem', marginTop: 6, color: 'var(--text-3)' }}>
+                Routes will animate one by one, priority-first
+              </div>
             </div>
           </div>
-
-          {/* Legend */}
-          <div className="viz-legend">
-            <h4 className="viz-legend-title">Legend</h4>
-            <div className="viz-legend-items">
-              <div className="viz-legend-item"><span className="viz-dot" style={{ background: '#16a34a' }} />Source node</div>
-              <div className="viz-legend-item"><span className="viz-dot" style={{ background: '#dc2626' }} />Target node</div>
-              <div className="viz-legend-item"><span className="viz-dot" style={{ background: '#4f46e5' }} />Currently visiting</div>
-              <div className="viz-legend-item"><span className="viz-dot" style={{ background: '#d97706' }} />Edge being relaxed</div>
-              <div className="viz-legend-item"><span className="viz-dot" style={{ background: '#16a34a', border: '2px solid #166534' }} />Shortest path</div>
-            </div>
-          </div>
-
-          {/* Log */}
-          <div className="viz-log">
-            <h4 className="viz-log-title">C++ Output</h4>
-            <div className="viz-log-entries" ref={logRef}>
-              <AnimatePresence>
-                {steps.slice(0, stepIdx + 1).map((s, i) => (
-                  <motion.div key={i} initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }}
-                    className={`viz-log-entry ${i === stepIdx ? 'viz-log-active' : ''}`}>
-                    <span className="viz-log-idx">{String(i+1).padStart(2,'0')}</span>
-                    {s.event === 'init' && <span>INIT n={s.nodes} src={s.start} dst={s.end}</span>}
-                    {s.event === 'queue_push' && <span>PUSH node={s.node} dist={s.distance}</span>}
-                    {s.event === 'visit' && <span>VISIT node={s.node} dist={s.distance}</span>}
-                    {s.event === 'relax' && <span>RELAX {s.u}→{s.v} w={s.weight} {s.old_dist}→{s.new_dist}</span>}
-                    {s.event === 'target_reached' && <span>TARGET node={s.node} ✓</span>}
-                    {s.event === 'finish' && <span>DONE path={s.path.join('→')} cost={s.total_distance}</span>}
-                  </motion.div>
-                ))}
-              </AnimatePresence>
-              {steps.length === 0 && <div className="viz-log-empty">Waiting…</div>}
-            </div>
-          </div>
-        </div>
+        )}
       </div>
+
+      {/* ── Route progress bar ── */}
+      {optimized && sortedResults.length > 0 && (
+        <div style={{
+          padding: '10px 18px',
+          borderTop: '1px solid var(--border)',
+          background: 'var(--bg-surface)',
+          display: 'flex', flexDirection: 'column', gap: '6px',
+        }}>
+          {sortedResults.map((r, i) => {
+            const isActive   = i === activeRouteIdx && !done;
+            const isComplete = completedRoutes.includes(i) || done;
+            const color      = ROUTE_COLORS[i % ROUTE_COLORS.length];
+            const orig = LOCATIONS.find(l => l.id === r.pkg.origin);
+            const dst  = LOCATIONS.find(l => l.id === r.pkg.destination);
+            const finish = r.steps.find((s: any) => s.event === 'finish');
+
+            return (
+              <div key={r.pkg.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '10px',
+                  padding: '5px 8px', borderRadius: 'var(--r-md)',
+                  background: isActive ? `${color}10` : hoveredRoute === i ? 'var(--bg-raised)' : 'transparent',
+                  border: `1px solid ${isActive ? `${color}30` : 'transparent'}`,
+                  cursor: 'pointer', transition: 'all 0.15s',
+                  opacity: !isActive && !isComplete && !done ? 0.4 : 1,
+                }}
+                onMouseEnter={() => setHoveredRoute(i)}
+                onMouseLeave={() => setHoveredRoute(null)}
+              >
+                {/* Status dot */}
+                <span style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: isComplete ? color : isActive ? color : '#2a3a55',
+                  flexShrink: 0,
+                  boxShadow: isActive ? `0 0 8px ${color}` : 'none',
+                  animation: isActive && playing ? 'blink 0.8s ease-in-out infinite' : 'none',
+                }} />
+
+                {/* Priority badge */}
+                <span className={`badge ${r.pkg.priority <= 2 ? 'b-red' : r.pkg.priority <= 4 ? 'b-amber' : r.pkg.priority <= 6 ? 'b-blue' : 'b-muted'}`}
+                  style={{ fontSize: '0.55rem' }}>
+                  P{r.pkg.priority}
+                </span>
+
+                <span style={{ fontSize: '0.72rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: isActive || isComplete ? color : 'var(--text-3)', minWidth: 72 }}>
+                  {r.pkg.id}
+                </span>
+
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-2)', flex: 1 }}>
+                  {orig?.short} → {dst?.short}
+                </span>
+
+                {isComplete && finish && (
+                  <>
+                    <span style={{ fontSize: '0.68rem', color, fontFamily: 'var(--font-mono)', fontWeight: 700 }}>
+                      {finish.path.map((n: number) => LOCATIONS.find(l => l.id === n)?.short).join('→')}
+                    </span>
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
+                      {finish.total_distance}km
+                    </span>
+                  </>
+                )}
+
+                {isActive && !isComplete && (
+                  <span style={{ fontSize: '0.65rem', color, fontFamily: 'var(--font-mono)' }}>
+                    {stepIdx + 1}/{steps.length} steps
+                  </span>
+                )}
+
+                {!isActive && !isComplete && (
+                  <span style={{ fontSize: '0.65rem', color: 'var(--text-3)' }}>queued</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

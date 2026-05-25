@@ -22,7 +22,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const executablePath = path.resolve('../cpp_engine/urgent_queue');
+    const executablePath = path.resolve(process.cwd(), '../cpp_engine/urgent_queue');
 
     return new Promise((resolve) => {
       const child = exec(executablePath, (error, stdout, stderr) => {
